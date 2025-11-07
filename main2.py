@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from scipy.io import arff
 import pandas as pd
+from QRDQN import QRDQNAgent, train_qr_dqn_agent, test
+
+
+
 
 pd.set_option('display.max_rows', None)  # show all rows
 pd.set_option('display.max_columns', None)  # show all columns
@@ -28,54 +32,35 @@ def process_dataset():
     test_data = pd.DataFrame(test_data_arff)
 
     # Convert byte-strings to strings for all columns
-    for column in train_data.select_dtypes(include=[object]).columns:
-        train_data[column] = train_data[column].str.decode('utf-8')
-    for column in test_data.select_dtypes(include=[object]).columns:
-        test_data[column] = test_data[column].str.decode('utf-8')
+    for df in [train_data, test_data]:
+        for col in df.select_dtypes(include=[object]).columns:
+            df[col] = df[col].str.decode('utf-8')
 
     # 1. Handling Missing Values
     train_data.dropna(inplace=True)
     test_data.dropna(inplace=True)
-    anomaly_count = sum(train_data.iloc[:, -1] == 'normal')
-    normal_count = sum(train_data.iloc[:, -1] == 'anomaly')
-    print(train_data.iloc[:, -1])
-    print("total # of anomalies: ", anomaly_count)
-    print("total # of normals: ", normal_count)
 
     # 2. Normalize Numerical Features
     numerical_cols = [0, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 16,
                       17, 18, 19, 22, 23, 24, 25, 26, 27, 28,
                       29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    scaler = StandardScaler()
+    train_data.iloc[:, numerical_cols] = scaler.fit_transform(train_data.iloc[:, numerical_cols])
+    test_data.iloc[:, numerical_cols] = scaler.transform(test_data.iloc[:, numerical_cols])
 
     # 3. Convert Categorical Features
     categorical_cols = [1, 2, 3, 6, 11, 20, 21, 41]
+    train_data = pd.get_dummies(train_data, columns=train_data.columns[categorical_cols])
+    test_data = pd.get_dummies(test_data, columns=test_data.columns[categorical_cols])
 
-    scaler = StandardScaler()
-    train_data.iloc[:, numerical_cols] = scaler.fit_transform(train_data.iloc[:, numerical_cols])
-    test_data.iloc[:, numerical_cols] = scaler.fit_transform(test_data.iloc[:, numerical_cols])  # Use the same scaler on test data
+    test_data = test_data.reindex(columns=train_data.columns, fill_value=0)
 
-    # Convert column indices to column names for categorical columns
-    categorical_colnames = train_data.columns[categorical_cols].tolist()
-    # One-hot encode categorical features
-    train_data = pd.get_dummies(train_data, columns=categorical_colnames)
-    test_data = train_data
-    # Get missing columns in the test set
-    missing_cols = set(train_data.columns) - set(test_data.columns)
-    # Add a missing column in the test set with default value equal to 0
-    for c in missing_cols:
-        test_data[c] = 0
-
-    test_data = test_data[train_data.columns]
-    # for col in categorical_cols:
-    #     le = LabelEncoder()
-    #     train_data[col] = le.fit_transform(train_data[col])
-    #     test_data[col] = le.transform(test_data[col])  # Use the same label encoder on test data
-    
     return (train_data, test_data)
 
 class IDSEnvironment(gym.Env):
 
     def __init__(self, dataset_path="KDDTrain+.txt"):
+        print('IDSEnvironment INIT')
         super(IDSEnvironment, self).__init__()
 
         # Load and preprocess the dataset
@@ -85,7 +70,6 @@ class IDSEnvironment(gym.Env):
                                             dtype=np.float32)
         self.current_data_pointer = 0
 
-
         # Define action space (binary decision for now: alert vs. no alert)
         self.action_space = spaces.Discrete(2)
         self.state_space = 148
@@ -93,26 +77,23 @@ class IDSEnvironment(gym.Env):
 
     def discretize_state(self, state):
         # Define bins for each feature
-        bins = [np.linspace(0, 1, 11) for _ in range(self.num_features)]  # 10 bins for example
-        discretized_state = [discretize(state[i], bins[i]) for i in range(self.num_features)]
-        return np.array(discretized_state)
+        return np.clip((state*10).astype(int), 0, 9) # already normalized data so this workrs
 
     def step(self, curr_action):
+
         self.state = self.discretize_state(self.train_data.iloc[self.current_data_pointer, :-1].values)
 
-        # Actual label
+        # Determine reward
         intrusion = self.train_data.iloc[self.current_data_pointer, -1]
-        reward_base = 1 if curr_action == intrusion else -1
-        curr_reward = np.random.normal(loc=reward_base, scale=0.1)  # 0.1 is the standard deviation
+        correct_action = 1 if intrusion == 'anomaly' else 0
+        reward = 1 if curr_action == correct_action else -1
+        curr_reward = np.random.normal(loc=reward, scale=0.1) # randomness needed
+        
 
-        # Move the data pointer
         self.current_data_pointer += 1
+        done = self.current_data_pointer >= 100 # len(self.train_data) // keep at 100 to run
 
-        # complete = self.current_data_pointer >= len(self.train_data)
-
-        complete = self.current_data_pointer >= 100
-
-        return self.state, curr_reward, complete, {}
+        return self.state, curr_reward, done, {}
 
     def reset(self, *args, **kwargs):
         self.state = self.discretize_state(self.train_data.iloc[0, :-1].values)
@@ -158,13 +139,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-def visualize_training_results(rewards, save_path = "results/main/training_rewards.png"):
-    """
-    Visualizes the training results.
-
-    Args:
-    - rewards (list): A list of rewards received at each episode.
-    """
+def visualize_training_results(rewards, save_path):
 
     # Calculate moving average with window size of 100
     moving_avg = [np.mean(rewards[max(0, i - 100):i + 1]) for i in range(len(rewards))]
@@ -184,12 +159,18 @@ def visualize_training_results(rewards, save_path = "results/main/training_rewar
     plt.savefig(save_path)
     plt.close()
 
-    print(f"✅ Plot saved to {save_path}")
+    print(f"Plot saved to {save_path}")
 
 if __name__ == '__main__':
     env = IDSEnvironment()
-    
-    num_episodes = 250
+
+    training_rewards, agent = train_qr_dqn_agent(env, num_episodes=50)
+    visualize_training_results(training_rewards, save_path="results/main/qr_dqn_rewards.png")
+
+    results, test_rewards = test(agent, env, num_episodes=50)
+    print(results)
+
+    num_episodes = 50
     rewards = []
 
     # Run 50 episodes // start with 50 SSS

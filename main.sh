@@ -10,9 +10,13 @@
 #SBATCH --error=slurm-main-%j.err
 
 # prepare your environment here
-module load /usr/local/bin/python3.9
+# Simulated SLURM run on Windows
 
-# Run main.py
-python main.py
+# Activate your Anaconda env
+conda activate tf1
 
-cp -r ./results/main
+# Run your script
+python "C:\DRL-Anomaly-Based-IDS\main.py"
+
+# Copy results
+# Copy-Item -Recurse ".\results\main" "C:\Users\walke\results_backup"
