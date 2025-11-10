@@ -187,6 +187,7 @@ def visualize_training_results(rewards, save_path = "results/main/training_rewar
     print(f"✅ Plot saved to {save_path}")
 
 if __name__ == '__main__':
+    
     env = IDSEnvironment()
     
     num_episodes = 250
