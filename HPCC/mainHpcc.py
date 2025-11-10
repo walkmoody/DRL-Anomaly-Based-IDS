@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import joblib
 
 import seaborn as sns
 from scipy.io import arff
@@ -65,9 +66,16 @@ def process_dataset():
     test_data = pd.get_dummies(test_data, columns=test_data.columns[categorical_cols])
     test_data = test_data.reindex(columns=train_data.columns, fill_value=0)
 
-    return train_data, test_data
+    return train_data, test_data, scaler
 
-train_data, test_data = process_dataset()
+train_data, test_data, scaler = process_dataset()
+
+# Save both the scaler and the one-hot encoded column structure
+joblib.dump(scaler, os.path.join(RESULTS_DIR, "scaler.pkl"))
+joblib.dump(train_data.columns.tolist(), os.path.join(RESULTS_DIR, "train_columns.pkl"))
+
+print(f"Saved scaler and train_columns to {RESULTS_DIR}")
+
 # ------------------------------
 # Plotting
 # ------------------------------

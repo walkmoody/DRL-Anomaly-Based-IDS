@@ -20,6 +20,9 @@ import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+import tensorflow as tf
+import os
+
 # synthetic traffic generation 
 # PCAP-only, NEVER sent on network
 def synth_benign_flow(src='10.0.0.1', dst='10.0.0.2', proto='tcp',
@@ -204,6 +207,24 @@ def train_placeholder_model(X_train, y_train):
 
 def evaluate_and_show(model, scaler, X_test, y_test, df_test):
     Xs = scaler.transform(X_test)
+    try:
+        scaler = joblib.load("scaler.pkl")
+        train_columns = joblib.load("train_columns.pkl")
+        print("✅ Loaded scaler and train columns.")
+    except Exception as e:
+        raise RuntimeError("Could not load scaler/train_columns. "
+                        "Ensure they were saved during training.") from e
+
+    # === Ensure test dataframe has same encoded columns ===
+    df_test = pd.get_dummies(df_test)
+
+    # Align with training columns
+    df_test = df_test.reindex(columns=train_columns, fill_value=0)
+
+    # === Scale data ===
+    Xs = scaler.transform(df_test.values)
+    print("After alignment, Xs shape:", Xs.shape)
+
     preds = model.predict(Xs)
     probs = model.predict_proba(Xs)[:,1] if hasattr(model, 'predict_proba') else None
     print("=== Classification Report ===")
@@ -254,26 +275,59 @@ def main(args):
     from sklearn.model_selection import train_test_split
     X_train, X_test, y_train, y_test, df_train, df_test = train_test_split(X, y, df, test_size=0.33, stratify=y, random_state=42)
     
-    
-    #walker add model that is good here
+    # walker add model that is good here
     if args.model:
         print("Loading model from", args.model)
-        model = joblib.load(args.model)
-        
-        try:
-            scaler = joblib.load(args.model + ".scaler")
-            print("Loaded scaler:", args.model + ".scaler")
-        except:
-            scaler = StandardScaler()
-            scaler.fit(X_train)
+
+        if os.path.isdir(args.model):
+            try:
+                # Define any custom loss or layer objects used in training
+                def _dummy_loss(y_true, y_pred):
+                    return tf.reduce_mean(y_pred - y_true) * 0.0  # placeholder no-op loss
+
+                model = tf.keras.models.load_model(
+                    args.model,
+                    custom_objects={'_dummy_loss': _dummy_loss}
+                )
+                print("Loaded TensorFlow model from:", args.model)
+            except Exception as e:
+                print("Error loading TensorFlow model:", e)
+                exit(1)
+
+            # Try to load the scaler
+            scaler_path = args.model + ".scaler"
+            if os.path.exists(scaler_path):
+                scaler = joblib.load(scaler_path)
+                print("✅ Loaded scaler:", scaler_path)
+            else:
+                print("⚠️ No scaler found — fitting a new one from training data.")
+                scaler = StandardScaler()
+                scaler.fit(X_train)
+
+        else:
+            # Fallback: joblib model
+            try:
+                model = joblib.load(args.model)
+                print("✅ Loaded joblib model:", args.model)
+            except Exception as e:
+                print("❌ Error loading joblib model:", e)
+                exit(1)
+
+            try:
+                scaler = joblib.load(args.model + ".scaler")
+                print("✅ Loaded scaler:", args.model + ".scaler")
+            except:
+                scaler = StandardScaler()
+                scaler.fit(X_train)
+
     else:
-        #Walker add the model training here, placeholder no good
-        print("No model")
+        print("⚠️ No model provided — training placeholder model.")
         model, scaler = train_placeholder_model(X_train, y_train)
         joblib.dump(model, "placeholder_ensemble.joblib")
         joblib.dump(scaler, "placeholder_ensemble.joblib.scaler")
 
     evaluate_and_show(model, scaler, X_test, y_test, df_test)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Offline intrusion demo (pcap generation + detection)")
@@ -281,3 +335,5 @@ if __name__ == '__main__':
     parser.add_argument("--model", default=None, help="Optional: path to saved model (.joblib). If provided, will be used.")
     args = parser.parse_args()
     main(args)
+
+    #C:\DRL-Anomaly-Based-IDS\qrdqn_modelHpcc
