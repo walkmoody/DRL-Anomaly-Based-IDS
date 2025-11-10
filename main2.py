@@ -177,7 +177,7 @@ def visualize_training_results(rewards, save_path):
 
     print(f"Plot saved to {save_path}")
 
-
+'''
 if __name__ == '__main__':
     # Train
     print("Env Setup", flush=True)
@@ -227,13 +227,10 @@ if __name__ == '__main__':
     print("Precision:", precision_score(y_true, y_pred, zero_division=0))
     print("Recall:", recall_score(y_true, y_pred, zero_division=0))
 
-"""
-
+'''
 if __name__ == '__main__':
     # Skip training, just load saved model
     print("Start Test", flush=True)
-
-    from QRDQN import QRDQNAgent  # make sure your QRDQNAgent class can accept a preloaded model
 
     # Initialize test environment
     test_env = IDSEnvironment(train=False)
@@ -275,4 +272,3 @@ if __name__ == '__main__':
     print("Accuracy:", accuracy_score(y_true, y_pred))
     print("Precision:", precision_score(y_true, y_pred))
     print("Recall:", recall_score(y_true, y_pred))
-"""
