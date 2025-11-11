@@ -14,17 +14,22 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 from common import IDSEnvironment, ReplayBuffer, QRDQNAgent
 from QRDQNHpcc import train_qr_dqn_agent_batch, test
+from tqdm import tqdm
+
 
 # ------------------------------
 # HPC-specific paths
 # ------------------------------
 BASEDIR = "/home/wamoody/DRLIDS"
+BASEDIR2 = "/home/wamoody/DRLIDS"
 RESULTS_DIR = f"{BASEDIR}/results/mainHpcc"
 os.makedirs(RESULTS_DIR, exist_ok=True)
+MODEL_PATH = f"{RESULTS_DIR}/qrdqn_modelHpcc"
+TEST_DATA_PATH = f"{RESULTS_DIR}/test_data_scaled.pkl"
+TRAIN_COLS_PATH = f"{RESULTS_DIR}/train_columns.pkl"
+SCALER_PATH = f"{RESULTS_DIR}/scaler.pkl"
 
-# ------------------------------
-# TensorFlow / GPU setup
-# ------------------------------
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 tf.get_logger().setLevel('ERROR')
 print("TensorFlow version:", tf.__version__)
@@ -38,41 +43,50 @@ else:
 # Dataset processing
 # ------------------------------
 def process_dataset():
-    train_data_arff, _ = arff.loadarff(f"{BASEDIR}/NSL-KDD/KDDTrain+.arff")
-    test_data_arff, _ = arff.loadarff(f"{BASEDIR}/NSL-KDD/KDDTest+.arff")
-    
-    train_data = pd.DataFrame(train_data_arff)
-    test_data = pd.DataFrame(test_data_arff)
+    train_data_arff, _ = arff.loadarff(f"{BASEDIR2}/NSL-KDD/KDDTrain+.arff")
+    test_data_arff, _ = arff.loadarff(f"{BASEDIR2}/NSL-KDD/KDDTest+.arff")
+    train_df = pd.DataFrame(train_data_arff)
+    test_df = pd.DataFrame(test_data_arff)
 
     # Decode byte-strings
-    for df in [train_data, test_data]:
-        for col in df.select_dtypes(include=[object]).columns:
-            df[col] = df[col].str.decode('utf-8')
+    train_df = train_df.applymap(lambda x: x.decode('utf-8') if isinstance(x, bytes) else x)
+    test_df = test_df.applymap(lambda x: x.decode('utf-8') if isinstance(x, bytes) else x)
     
     # Drop missing values
-    train_data.dropna(inplace=True)
-    test_data.dropna(inplace=True)
+    y_train = train_df['class']
+    y_test = test_df['class']
+    X_train = train_df.drop(columns=['class'])
+    X_test = test_df.drop(columns=['class'])
 
-    # Normalize numerical features
-    numerical_cols = [0,4,5,7,8,9,10,12,13,14,15,16,17,18,19,
-                      22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40]
+    categorical_cols = ['protocol_type', 'service', 'flag', 'land', 'logged_in', 'is_host_login', 'is_guest_login']
+    X_train = pd.get_dummies(X_train, columns=categorical_cols)
+    X_test = pd.get_dummies(X_test, columns=categorical_cols)
+
+    # Align test columns with training (some services may differ)
+    X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
+
+    # Scale
     scaler = StandardScaler()
-    train_data.iloc[:, numerical_cols] = scaler.fit_transform(train_data.iloc[:, numerical_cols])
-    test_data.iloc[:, numerical_cols] = scaler.transform(test_data.iloc[:, numerical_cols])
+    X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+    X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
 
-    # One-hot encode categorical features
-    categorical_cols = [1,2,3,6,11,20,21,41]
-    train_data = pd.get_dummies(train_data, columns=train_data.columns[categorical_cols])
-    test_data = pd.get_dummies(test_data, columns=test_data.columns[categorical_cols])
-    test_data = test_data.reindex(columns=train_data.columns, fill_value=0)
+    # Add label column back
+    X_train_scaled['class'] = y_train.values
+    X_test_scaled['class'] = y_test.values
+    
+    print(X_train_scaled['class'].value_counts())
+    print(X_train_scaled.head(3).iloc[:, -3:])  # Last 3 columns
 
-    return train_data, test_data, scaler
+
+    return X_train_scaled, X_test_scaled, scaler
 
 train_data, test_data, scaler = process_dataset()
 
 # Save both the scaler and the one-hot encoded column structure
 joblib.dump(scaler, os.path.join(RESULTS_DIR, "scaler.pkl"))
 joblib.dump(train_data.columns.tolist(), os.path.join(RESULTS_DIR, "train_columns.pkl"))
+joblib.dump(test_data, os.path.join(RESULTS_DIR, "test_data_scaled.pkl"))
+print("Saved test_data_scaled.pkl")
 
 print(f"Saved scaler and train_columns to {RESULTS_DIR}")
 
@@ -96,6 +110,7 @@ def visualize_training_results(rewards, save_path):
 # ------------------------------
 # Main HPC training/testing
 # ------------------------------
+
 if __name__ == '__main__':
     # Train
 
@@ -136,3 +151,74 @@ if __name__ == '__main__':
     print("Precision:", precision_score(y_true, y_pred, zero_division=0))
     print("Recall:", recall_score(y_true, y_pred))
     print("Finished successfully.")
+
+'''
+
+if __name__ == '__main__':
+    
+    print("Starting Test-only Run", flush=True)
+
+    # Initialize test environment
+    print("Loading test dataset and scaler...")
+    test_data = joblib.load(TEST_DATA_PATH)
+    train_columns = joblib.load(TRAIN_COLS_PATH)
+    scaler = joblib.load(SCALER_PATH)
+
+    y_test = test_data['class']
+    X_test = test_data.drop(columns=['class'])
+    X_test = X_test.reindex(columns=[c for c in train_columns if c != 'class'], fill_value=0)
+
+    test_data = X_test.copy()
+    test_data['class'] = y_test.values
+
+    print(f"Test data shape: {test_data.shape}")
+
+
+    test_env = IDSEnvironment(test_data, train=False)
+
+    # Load trained agent
+    print(f"Loading model from: {MODEL_PATH}")
+    agent = QRDQNAgent(state_size=test_env.num_features, action_size=test_env.action_space.n)
+    agent.model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    agent.target_model = agent.model  # sync target network
+
+    # Run test episodes
+    NUM_EPISODES = 50
+    print(f"Running {NUM_EPISODES} test episodes...")
+    results, test_rewards = test(agent, test_env, num_episodes=NUM_EPISODES)
+
+    # Visualize rewards
+    visualize_training_results(test_rewards,
+                               save_path=os.path.join(RESULTS_DIR, "qr_dqn_test_rewards.png"))
+
+    # Compute accuracy / precision / recall
+    print("Computing accuracy metrics...")
+    y_true, y_pred = [], []
+    NUM_EVAL_EPISODES = 20
+    for episode in tqdm(range(NUM_EVAL_EPISODES), desc="Evaluating"):
+        state = test_env.reset()
+        done = False
+        while not done:
+            action = agent.act(state)
+            next_state, reward, done, _ = test_env.step(action)
+            idx = test_env.current_data_pointer - 1
+            if idx < 0:
+                idx = 0
+
+            # Handle both encoded (numeric) or string-based labels
+            true_label = test_env.dataset.iloc[idx, -1]
+            if isinstance(true_label, (float, int)):
+                y_true.append(int(true_label))
+            else:
+                y_true.append(1 if str(true_label).lower() == "anomaly" else 0)
+
+            y_pred.append(action)
+            state = next_state
+
+    print("\nEvaluation Metrics:")
+    print("Accuracy:", accuracy_score(y_true, y_pred))
+    print("Precision:", precision_score(y_true, y_pred, zero_division=0))
+    print("Recall:", recall_score(y_true, y_pred))
+    print("Test-only run complete.")
+
+    '''

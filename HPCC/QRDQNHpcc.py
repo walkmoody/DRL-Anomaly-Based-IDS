@@ -107,8 +107,7 @@ def train_qr_dqn_agent_batch(env, num_episodes=100, batch_size=64, gamma=0.99, t
             agent.epsilon *= agent.epsilon_decay
             agent.epsilon = max(agent.epsilon, agent.epsilon_min)
 
-        if (episode + 1) % 10 == 0:
-            print(f"Episode {episode+1}/{num_episodes} -- total_reward = {total_reward:.2f}, epsilon = {agent.epsilon:.3f}")
+        print(f"Episode {episode+1}/{num_episodes} -- total_reward = {total_reward:.2f}, epsilon = {agent.epsilon:.3f}")
 
     return rewards, agent
 

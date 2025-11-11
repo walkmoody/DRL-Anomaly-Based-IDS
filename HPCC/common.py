@@ -30,20 +30,17 @@ class IDSEnvironment(gym.Env):
 
     def step(self, curr_action):
         intrusion = self.dataset.iloc[self.current_data_pointer, -1]
-        self.state = self.discretize_state(self.dataset.iloc[self.current_data_pointer, :-1].values)
+        state = self.dataset.iloc[self.current_data_pointer, :-1].values
+        self.state = self.discretize_state(state)
         
         correct_action = 1 if intrusion == 'anomaly' else 0
-        
-        if self.train:
-            reward = 1.0 if curr_action == correct_action else -0.2
-            curr_reward = np.random.normal(loc=reward, scale=0.1) # randomness during training
-        else:
-            curr_reward = 1.0 if curr_action == correct_action else -0.2  # deterministic during testing
+        reward = 1.0 if curr_action == correct_action else -1.0
 
+        done = (self.current_data_pointer + 1) >= 50
         self.current_data_pointer += 1
-        done = self.current_data_pointer >= min(1000, len(self.dataset))
 
-        return self.state, curr_reward, done, {}
+        return self.state, reward, done
+
 
 
     def reset(self, *args, **kwargs):
