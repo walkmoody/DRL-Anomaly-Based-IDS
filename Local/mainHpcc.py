@@ -113,7 +113,7 @@ def visualize_training_results(rewards, save_path):
 # ------------------------------
 # Main HPC training/testing
 # ------------------------------
-'''
+
 if __name__ == '__main__':
     # Train
 
@@ -154,8 +154,8 @@ if __name__ == '__main__':
     print("Precision:", precision_score(y_true, y_pred, zero_division=0))
     print("Recall:", recall_score(y_true, y_pred))
     print("Finished successfully.")
-'''
 
+'''
 if __name__ == '__main__':
     
     print("Starting Test-only Run", flush=True)
@@ -222,3 +222,5 @@ if __name__ == '__main__':
     print("Precision:", precision_score(y_true, y_pred, zero_division=0))
     print("Recall:", recall_score(y_true, y_pred))
     print("Test-only run complete.")
+
+    '''

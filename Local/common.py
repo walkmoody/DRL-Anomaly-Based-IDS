@@ -39,9 +39,7 @@ class IDSEnvironment(gym.Env):
         done = (self.current_data_pointer + 1) >= 50
         self.current_data_pointer += 1
 
-        return self.state, reward, done
-
-
+        return self.state, reward, done, {}
 
     def reset(self, *args, **kwargs):
 

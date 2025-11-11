@@ -36,10 +36,10 @@ class IDSEnvironment(gym.Env):
         correct_action = 1 if intrusion == 'anomaly' else 0
         reward = 1.0 if curr_action == correct_action else -1.0
 
-        done = (self.current_data_pointer + 1) >= 50
+        done = (self.current_data_pointer + 1) >= 1000
         self.current_data_pointer += 1
 
-        return self.state, reward, done
+        return self.state, reward, done, {}
 
 
 
