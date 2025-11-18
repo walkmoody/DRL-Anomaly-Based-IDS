@@ -13,46 +13,75 @@ import seaborn as sns
 from common import IDSEnvironment, ReplayBuffer, QRDQNAgent
 
 def train_qr_dqn_agent(env, num_episodes=100, batch_size=64, gamma=0.99):
+
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
-    agent = QRDQNAgent(state_size, action_size,
-                    num_quantiles=51,
-                    learning_rate=1e-4,
-                    gamma=gamma,
-                    epsilon_start=1.0,
-                    epsilon_min=0.05,
-                    epsilon_decay=0.995,
-                    update_target_every=1000)
-    memory_buffer = ReplayBuffer(capacity=50000)
 
+    # Recommended exploration settings for IDS
+    agent = QRDQNAgent(
+        state_size, action_size,
+        num_quantiles=51,
+        learning_rate=1e-4,
+        gamma=gamma,
+        epsilon_start=1.0,
+        epsilon_min=0.05,        # better for anomaly detection
+        epsilon_decay=0.995,     # decay ONCE per episode (slow & stable)
+        update_target_every=1000
+    )
+
+    memory_buffer = ReplayBuffer(capacity=50000)
     rewards = []
-    print("training")
+
+    print("Training...")
 
     for episode in range(num_episodes):
+
         curr_state = env.reset()
         total_reward = 0
         done = False
-
-        TRAIN_EVERY = 10
         step_count = 0
 
-        print("episode: ", episode)
+        TRAIN_EVERY = 10
+
+        print(f"Episode {episode+1}/{num_episodes}")
+
         while not done:
+
+            # --- choose action with epsilon-greedy ---
             action = agent.act(curr_state)
+
+            # --- environment step ---
             nxt_state, reward, done, _ = env.step(action)
-            # store raw state vectors (not reshaped)
+
+            # store transition
             memory_buffer.add(curr_state, action, reward, nxt_state, float(done))
+
+            # --- train periodically ---
             if len(memory_buffer) > batch_size and step_count % TRAIN_EVERY == 0:
                 experiences = memory_buffer.sample(batch_size)
                 agent.train(experiences)
+
             curr_state = nxt_state
             total_reward += reward
+            step_count += 1
+
+        # store episode reward
         rewards.append(total_reward)
+
+        # --- DECAY EPSILON *ONCE PER EPISODE* ---
+        agent.epsilon = max(agent.epsilon_min,
+                            agent.epsilon * agent.epsilon_decay)
+
+        # progress print every 10 episodes
         if (episode + 1) % 10 == 0:
-            print(f"Episode {episode+1}/{num_episodes} -- total_reward = {total_reward:.2f}, epsilon = {agent.epsilon:.3f}")
+            print(f"Episode {episode+1}/{num_episodes} "
+                  f"-- total_reward = {total_reward:.2f}, "
+                  f"epsilon = {agent.epsilon:.3f}")
+
     return rewards, agent
 
-def train_qr_dqn_agent_batch(env, num_episodes=100, batch_size=64, gamma=0.99, train_every=10):
+
+def train_qr_dqn_agent_batch(env, num_episodes=150, batch_size=64, gamma=0.99, train_every=10):
     """
     Training loop that uses batch action selection for speed.
     """
@@ -63,11 +92,11 @@ def train_qr_dqn_agent_batch(env, num_episodes=100, batch_size=64, gamma=0.99, t
                        learning_rate=1e-4,
                        gamma=gamma,
                        epsilon_start=1.0,
-                       epsilon_min=0.05,
-                       epsilon_decay=0.995,
+                       epsilon_min=0.1,
+                       epsilon_decay=0.991,
                        update_target_every=1000)
     
-    memory_buffer = ReplayBuffer(capacity=50000)
+    memory_buffer = ReplayBuffer(capacity=10000)
     rewards = []
 
     print("training with batch actions...")
@@ -88,18 +117,23 @@ def train_qr_dqn_agent_batch(env, num_episodes=100, batch_size=64, gamma=0.99, t
                 states_array = np.array(states_batch, dtype=np.float32)
                 actions_batch = agent.act_batch(states_array)
                 for idx, action in enumerate(actions_batch):
-                    s = states_batch[idx]
                     nxt_state, reward, done_flag, _ = env.step(action)
-                    memory_buffer.add(s, action, reward, nxt_state, float(done_flag))
+                    memory_buffer.add(states_batch[idx], action, reward, nxt_state, float(done_flag))
                     total_reward += reward
                     curr_state = nxt_state
                     step_count += 1
-                    done = done_flag
+                    if done_flag:
+                        done = True
+                        break  # Stop processing the batch if done
+
+                    print(step_count,end= '',flush=True)
+
                     # Train if memory has enough samples
                     if len(memory_buffer) > batch_size:
                         experiences = memory_buffer.sample(batch_size)
                         agent.train(experiences)
                 states_batch = []  # reset batch
+                
 
         rewards.append(total_reward)
         # decay epsilon
@@ -111,7 +145,7 @@ def train_qr_dqn_agent_batch(env, num_episodes=100, batch_size=64, gamma=0.99, t
 
     return rewards, agent
 
-def train_dqn_agent_optimized(env, num_episodes=100, batch_size=32, train_every=32):
+def train_dqn_agent_optimized(env, num_episodes=50, batch_size=32, train_every=32):
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
     agent = QRDQNAgent(state_size, action_size)
@@ -221,38 +255,6 @@ def visualize_training_results(rewards):
     plt.tight_layout()
     plt.savefig("training_metrics.png")
     plt.close()
-    
-
-if __name__ == '__main__':
-    env = IDSEnvironment()
-    training_rewards, agent = train_qr_dqn_agent(env)
-    visualize_training_results(training_rewards)
-    results, test_rewards = test(agent,env)
-    # 1. Bar Plot for Metrics
-    metrics = ['Average Reward', 'Accuracy', 'F1 Score', 'Precision', 'Recall']
-    values = [results[metric] for metric in metrics]
-
-    plt.figure(figsize=(10, 5))
-    plt.bar(metrics, values, color=['blue', 'green', 'red', 'purple', 'orange'])
-    plt.ylabel('Value')
-    plt.title('QRDQN Metrics Visualization')
-    plt.ylim([0, 1])
-    for i, v in enumerate(values):
-        plt.text(i, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=10)
-    plt.tight_layout()
-
-    # 2. Heatmap for Confusion Matrix
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(results['Confusion Matrix'], annot=True, cmap="YlGnBu", fmt='g')
-    plt.title('QRDQN Confusion Matrix')
-    plt.xlabel('Predicted')
-    plt.ylabel('Actual')
-    
-    plt.tight_layout()
-    plt.savefig("training_metrics.png")
-    plt.close()
-    visualize_training_results(training_rewards)
-    print(results)
 
 
 

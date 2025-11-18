@@ -102,7 +102,7 @@ class IDSEnvironment(gym.Env):
 
         # Actual label
         intrusion = self.train_data.iloc[self.current_data_pointer, -1]
-        reward_base = 1 if curr_action == intrusion else -1
+        reward_base = 1 if curr_action == intrusiSon else -1
         curr_reward = np.random.normal(loc=reward_base, scale=0.1)  # 0.1 is the standard deviation
 
         # Move the data pointer

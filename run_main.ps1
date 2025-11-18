@@ -18,7 +18,7 @@ New-Item -ItemType Directory -Force -Path $backup | Out-Null
 
 # 3️⃣ Run the main script
 Write-Host "Starting DRLIDS local test run..."
-python "$project\Local\mainHpcc.py" *> $logFile
+python -u "$project\Local\mainHpcc.py" 2>&1 | Tee-Object -FilePath $logFile
 
 # 4️⃣ Optional: copy log or results to backup
 Copy-Item -Recurse -Force $results $backup
