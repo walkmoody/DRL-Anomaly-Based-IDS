@@ -7,7 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4        # Reduced for faster scheduling
-#SBATCH --mem=64G                # Plenty for RL training
+#SBATCH --mem=128G                # Plenty for RL training
 # NO GPU REQUEST HERE
 
 # Ensure results directory exists
@@ -20,4 +20,4 @@ export PYTHONUNBUFFERED=1
 
 cd /home/wamoody/DRLIDS
 
-python -u mainHpcc.py
+python -u mainHpccIQN.py

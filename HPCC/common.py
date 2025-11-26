@@ -32,35 +32,38 @@ class IDSEnvironment(gym.Env):
     def step(self, curr_action):
         intrusion = self.dataset.iloc[self.current_data_pointer, -1]
         self.state = self.dataset.iloc[self.current_data_pointer, :-1].values.astype(np.float32)
-        self.state = self.discretize_state(self.state)
+        #self.state = self.discretize_state(self.state)
         
         if intrusion == 'anomaly':
-            reward = 1.5 if curr_action == 1 else -1.0
+            reward = 1.0 if curr_action == 1 else -1.0
         else:
             reward = 1.0 if curr_action == 0 else -1.0
 
-
-        done = (self.current_data_pointer + 1) >= len(self.dataset)
         self.current_data_pointer += 1
 
-        return self.state, reward, done, {}
+        done = self.current_data_pointer >= len(self.dataset)
+        label = 1 if intrusion == 'anomaly' else 0
+        return self.state, reward, done,  {"label": label}
 
-    def reset(self, *args, **kwargs):
-        
-        self.state = self.dataset.iloc[0, :-1].values.astype(np.float32)
+    def reset(self, episode_num=0, *args, **kwargs):
 
+        # If we're within 1000 rows of end → wrap around
+        if self.current_data_pointer >= len(self.dataset):
+            self.current_data_pointer = 0
 
-        self.current_data_pointer = 0
+        # Every 10 episodes, jump to a new part of the dataset
+        if episode_num % 10 == 1:
+            jump_point = np.random.randint(0, len(self.dataset) - 10000)
+            self.current_data_pointer = jump_point
 
-        seed = kwargs.get('seed', None)
-        options = kwargs.get('options', None)
-
-        if seed is not None:
-            np.random.seed(seed)
-
-        # Handle the options as needed...
+        # Load state from current pointer
+        self.state = (
+            self.dataset.iloc[self.current_data_pointer, :-1].values.astype(np.float32)
+        )
 
         return self.state
+
+
 
     def render(self, mode='human'):
         if mode == 'human':
@@ -79,17 +82,56 @@ class ReplayBuffer:
         self.buffer = []
         self.position = 0
 
-    def add(self, state, action, reward, next_state, done):
+    def add(self, state, action, reward, next_state, done, label):
+        """
+        label must be 0 (normal) or 1 (anomaly)
+        """
+        entry = (state, action, reward, next_state, done, label)
+
         if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.position] = (state, action, reward, next_state, done)
+            self.buffer.append(entry)
+        else:
+            self.buffer[self.position] = entry
+
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
+        # Only sample real entries (no None)
         return random.sample(self.buffer, batch_size)
+
+    def sample_balanced(self, batch_size, min_anom=8):
+        """
+        Balanced sampling of anomalies vs normal entries.
+        Requires label in entry[5].
+        """
+
+        # split buffer into anomalies and normals
+        anomalies = [e for e in self.buffer if e[5] == 1]
+        normals   = [e for e in self.buffer if e[5] == 0]
+
+        # not enough anomalies yet → fallback
+        if len(anomalies) < min_anom:
+            return self.sample(batch_size)
+
+        # sample anomalies + fill rest with normals
+        anom_sample = random.sample(anomalies, min(min_anom, len(anomalies)))
+        normal_needed = batch_size - len(anom_sample)
+
+        # in case normals are too few
+        normal_sample = random.sample(normals, min(normal_needed, len(normals)))
+
+        combined = anom_sample + normal_sample
+
+        # fallback: if we still don't have enough samples
+        if len(combined) < batch_size:
+            combined += random.sample(self.buffer, batch_size - len(combined))
+
+        return combined
 
     def __len__(self):
         return len(self.buffer)
+
+
 
 class QRDQNAgent:
     def __init__(self, state_size, action_size, num_quantiles=51, learning_rate=1e-4, gamma=.99,
@@ -187,7 +229,7 @@ class QRDQNAgent:
     # --------------------------------------
     def train(self, experiences):
 
-        states, actions, rewards, next_states, dones = zip(*experiences)
+        states, actions, rewards, next_states, dones, labels = zip(*experiences)
         states = np.vstack(states).astype(np.float32)
         next_states = np.vstack(next_states).astype(np.float32)
         actions = np.array(actions)
@@ -235,3 +277,122 @@ class QRDQNAgent:
         if self.train_step % self.update_target_every == 0:
             self.update_target_network(hard=True)
 
+class IQNAgent:
+
+    def __init__(self, state_size, action_size,
+                 num_tau_samples=32, embedding_dim=64, num_quantiles=51,
+                 gamma=0.99, learning_rate=1e-4,
+                 epsilon_start=1.0, epsilon_min=0.05, epsilon_decay=0.97,
+                 batch_size=64, update_target_every=1000):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.num_tau_samples = num_tau_samples
+        self.embedding_dim = embedding_dim
+        self.num_quantiles = num_quantiles
+
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.update_target_every = update_target_every
+        self.train_step = 0
+
+        # Build online & target networks
+        self.model = self._build_model()
+        self.target_model = self._build_model()
+        self.update_target_network(hard=True)
+
+    def _build_model(self):
+        # Inputs
+        states_input = tf.keras.Input(shape=(self.state_size,), dtype=tf.float32)
+        taus_input = tf.keras.Input(shape=(self.num_tau_samples, 1), dtype=tf.float32)
+
+        # Cosine embedding for taus
+        i_pi = tf.constant(np.arange(1, self.embedding_dim + 1) * np.pi, dtype=tf.float32)
+        cos_tau = tf.cos(tf.matmul(taus_input, i_pi[None, :]))  # (B, num_tau_samples, embedding_dim)
+        cos_tau = tf.keras.layers.Dense(128, activation='relu')(cos_tau)  # project to match state
+
+        # State embedding
+        x = tf.keras.layers.Dense(128, activation='relu')(states_input)
+        x = tf.keras.layers.Dense(128, activation='relu')(x)
+        x = tf.expand_dims(x, axis=1)  # (B,1,128)
+
+        # Combine state + tau embeddings
+        x = tf.keras.layers.Multiply()([x, cos_tau])  # (B, num_tau_samples, 128)
+        x = tf.keras.layers.Dense(128, activation='relu')(x)
+        quantiles = tf.keras.layers.Dense(self.action_size)(x)  # (B, num_tau_samples, A)
+
+        model = tf.keras.Model(inputs=[states_input, taus_input], outputs=quantiles)
+        model.compile(optimizer=tf.keras.optimizers.Adam(self.learning_rate),
+                      loss=self.quantile_huber_loss)
+        return model
+
+
+    def sample_taus(self, batch_size):
+        return np.random.uniform(0, 1, size=(batch_size, self.num_tau_samples, 1)).astype(np.float32)
+
+    def quantile_huber_loss(self, y_true, y_pred, kappa=1.0):
+        delta = y_true - y_pred
+        huber_loss = tf.where(tf.abs(delta) <= kappa,
+                              0.5 * tf.square(delta),
+                              kappa * (tf.abs(delta) - 0.5 * kappa))
+        tau = tf.linspace(0.0, 1.0, self.num_tau_samples)
+        tau = tf.reshape(tau, (1, self.num_tau_samples, 1))
+        loss = tf.abs(tau - tf.cast(delta < 0, tf.float32)) * huber_loss
+        return tf.reduce_mean(tf.reduce_sum(loss, axis=1))
+
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        state = np.array(state, dtype=np.float32).reshape(1, -1)
+        taus = self.sample_taus(1)
+        q_values = self.model.predict([state, taus], verbose=0)  # (1, num_tau_samples, A)
+        q_mean = np.mean(q_values, axis=1)
+        return int(np.argmax(q_mean[0]))
+
+    def train(self, experiences):
+        states, actions, rewards, next_states, dones, _ = zip(*experiences)
+        states = np.vstack(states)
+        next_states = np.vstack(next_states)
+        actions = np.array(actions)
+        rewards = np.array(rewards, dtype=np.float32)
+        dones = np.array(dones, dtype=np.float32)
+        batch_size = len(states)
+
+        taus = self.sample_taus(batch_size)
+        next_taus = self.sample_taus(batch_size)
+
+        # Compute target quantiles
+        next_q = self.target_model.predict([next_states, next_taus], verbose=0)
+        next_q_mean = np.mean(next_q, axis=1)
+        next_actions = np.argmax(next_q_mean, axis=1)
+        next_q_selected = next_q[np.arange(batch_size), :, next_actions]
+
+        targets = rewards[:, None] + (1 - dones[:, None]) * self.gamma * next_q_selected
+
+        # Predict current quantiles
+        current_pred = self.model.predict([states, taus], verbose=0)
+
+        # Mask to update only chosen actions
+        mask = np.zeros_like(current_pred)
+        for i, a in enumerate(actions):
+            mask[i, :, a] = 1
+        y_true = mask * targets[:, :, None] + (1 - mask) * current_pred
+
+        # Train
+        self.model.train_on_batch([states, taus], y_true)
+
+        # Update target
+        self.train_step += 1
+        if self.train_step % self.update_target_every == 0:
+            self.update_target_network(hard=True)
+
+    def update_target_network(self, hard=False, tau=0.005):
+        if hard:
+            self.target_model.set_weights(self.model.get_weights())
+        else:
+            mw = self.model.get_weights()
+            tw = self.target_model.get_weights()
+            self.target_model.set_weights([(1 - tau) * t + tau * m for t, m in zip(tw, mw)])

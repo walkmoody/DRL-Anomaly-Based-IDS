@@ -12,9 +12,7 @@ from scipy.io import arff
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
-from common import IDSEnvironment, ReplayBuffer, QRDQNAgent, IQNAgent
-from QRDQNHpcc import train_qr_dqn_agent_batch, test, train_qr_dqn_agent, train_qr_dqn_agent_soft_target
-from IQNHpcc import train_iqn_agent, test_iqn_agent
+from commonIQN import train_iqn_agent, test_iqn_agent, IDSEnvironment, IQNAgent
 from tqdm import tqdm
 
 
@@ -37,6 +35,13 @@ print("TensorFlow version:", tf.__version__)
 print("GPU devices:", tf.config.list_physical_devices('GPU'))
 if tf.config.list_physical_devices('GPU'):
     print("Using GPU")
+    # Enable memory growth to avoid TF pre-allocating all GPU memory
+    try:
+        gpus = tf.config.list_physical_devices('GPU')
+        for g in gpus:
+            tf.config.experimental.set_memory_growth(g, True)
+    except Exception:
+        pass
 else:
     print("NOT using GPU")
 
@@ -121,79 +126,104 @@ def visualize_training_results(rewards, save_path):
 # Main HPC training/testing
 # ------------------------------
 
+if __name__ == "__main__":
+    # ------------------------------
+    # Dataset and environment setup
+    # ------------------------------
+    print("Loading and processing dataset...")
+    train_data, test_data, scaler = process_dataset()
 
-if __name__ == '__main__':
-    # --- Load & process dataset ---
-    print("Dataset and scaler saved.")
+    # Save scaler and train column structure
+    joblib.dump(scaler, os.path.join(RESULTS_DIR, "scaler.pkl"))
+    joblib.dump(train_data.columns.tolist(), os.path.join(RESULTS_DIR, "train_columns.pkl"))
+    joblib.dump(test_data, os.path.join(RESULTS_DIR, "test_data_scaled.pkl"))
+    print("Scaler, train columns, and test data saved.")
 
-    # --- Initialize environment & warm-up ---
+    # Initialize environments
     train_env = IDSEnvironment(train_data, train=True)
-    # --- Train agent ---
+    test_env = IDSEnvironment(test_data, train=False)
+
+    # ------------------------------
+    # Train IQN Agent
+    # ------------------------------
+    print("Starting training...")
     start_time = time.time()
-
-    
-    print("Beign training")
     training_rewards, agent = train_iqn_agent(train_env)
+    print(f"Training finished in {time.time() - start_time:.2f} seconds.")
 
-    print(f"Training finished in {time.time() - start_time:.2f}s")
+    # Save training rewards plot
     visualize_training_results(training_rewards, save_path=f"{RESULTS_DIR}/IQN_train_rewards.png")
-    
+
+    # Save trained model
     try:
         agent.model.save(MODEL_PATH)
-        print(f"Saved model to {MODEL_PATH}")
+        print(f"Model saved to {MODEL_PATH}")
     except Exception as e:
         print("Warning: failed to save model:", e)
 
+    # ------------------------------
+    # Test IQN Agent
+    # ------------------------------
+    agent.epsilon = 0.0  # Fully greedy for testing
+    print("Starting testing...")
+    test_metrics = test_iqn_agent(agent, test_env, num_episodes=50)
 
-    test_env = IDSEnvironment(test_data, train=False)
-    results, test_rewards = test_iqn_agent(agent, test_env, num_episodes=50)
-    visualize_training_results(test_rewards, save_path=f"{RESULTS_DIR}/IQN_test_rewards.png")
+    # Save test rewards plot if present
+    if "rewards" in test_metrics:
+        visualize_training_results(
+            test_metrics["rewards"],
+            save_path=f"{RESULTS_DIR}/IQN_test_rewards.png"
+        )
 
-    print("Finished successfully.")
+    # Print test metrics
+    print("===== Test Metrics =====")
+    print(f"Accuracy:  {test_metrics['accuracy']:.4f}")
+    print(f"Precision: {test_metrics['precision']:.4f}")
+    print(f"Recall:    {test_metrics['recall']:.4f}")
+    print(f"F1 Score:  {test_metrics['f1']:.4f}")
+    print("Confusion Matrix:\n", test_metrics["confusion_matrix"])
+    print("===== Run Complete =====")
+
 
 '''
+# TEST-ONLY MODE (active)
 if __name__ == '__main__':
-    print("===== Starting Test-only Run =====", flush=True)
+    print("===== Starting Test-Only Mode =====", flush=True)
 
-    # --------------------------
-    # Load test dataset and environment
-    # --------------------------
-    print("Loading test dataset from:", TEST_DATA_PATH)
-    test_data = joblib.load(TEST_DATA_PATH)
-    print(f"Test data shape: {test_data.shape}")
-
+    # Initialize test environment
     print("Initializing test environment...")
     test_env = IDSEnvironment(test_data, train=False)
-
-    # --------------------------
+    
     # Load trained IQN agent
-    # --------------------------
     tf.keras.backend.clear_session()
     print(f"Loading IQN model from: {MODEL_PATH}")
     agent = IQNAgent(state_size=test_env.num_features, action_size=test_env.action_space.n)
-    loaded_model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    agent.model = loaded_model
-    agent.target_model = loaded_model
-    print("Model loaded successfully.")
+    try:
+        loaded_model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+        agent.model = loaded_model
+        # Use a separate target model (copy weights) for safety
+        try:
+            agent.target_model = tf.keras.models.clone_model(loaded_model)
+            agent.target_model.set_weights(loaded_model.get_weights())
+        except Exception:
+            agent.target_model = loaded_model
+        print("Model loaded successfully.")
+    except Exception as e:
+        print("Warning: failed to load model:", e)
+        print("Proceeding with untrained agent.")
+    
+    # Evaluate agent with greedy policy
+    agent.epsilon = 0.0  # Fully greedy for testing
+    print("Starting testing...")
+    test_metrics = test_iqn_agent(agent, test_env, num_episodes=50)
 
-    # --------------------------
-    # Evaluate agent using environment episodes
-    # --------------------------
-    NUM_EPISODES = 50
-    print(f"Running {NUM_EPISODES} test episodes in the environment...")
-    metrics = test_iqn_agent(agent, test_env, num_episodes=NUM_EPISODES)
-    print("Test episodes completed.\n")
-
-    # --------------------------
-    # Summary of evaluation metrics
-    # --------------------------
-    print("===== Evaluation Metrics =====")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"F1 Score: {metrics['f1']:.4f}")
-    print("Confusion Matrix:\n", metrics['confusion_matrix'])
-    print("===== Test-only Run Complete =====")
-
+    # Print test metrics
+    print("===== Test Metrics =====")
+    print(f"Accuracy: {test_metrics['accuracy']:.4f}")
+    print(f"Precision: {test_metrics['precision']:.4f}")
+    print(f"Recall: {test_metrics['recall']:.4f}")
+    print(f"F1 Score: {test_metrics['f1']:.4f}")
+    print("Confusion Matrix:\n", test_metrics["confusion_matrix"])
+    print("===== Test-Only Run Complete =====")
 
 '''
