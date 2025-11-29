@@ -21,7 +21,7 @@ from tqdm import tqdm
 # ------------------------------
 BASEDIR = "/home/wamoody/DRLIDS"
 BASEDIR2 = "/home/wamoody/DRLIDS"
-RESULTS_DIR = f"{BASEDIR}/results/mainHpcc"
+RESULTS_DIR = f"{BASEDIR}/results/mainHpcc" 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 MODEL_PATH = f"{RESULTS_DIR}/iqn_modelHpcc"
 TEST_DATA_PATH = f"{RESULTS_DIR}/test_data_scaled.pkl"

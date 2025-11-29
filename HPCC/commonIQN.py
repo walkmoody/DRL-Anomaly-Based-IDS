@@ -1,10 +1,9 @@
-# commonIQN.py
+# commonIQN.py  (optimized)
 
 import numpy as np
 import pandas as pd
 import gym
 from gym import spaces
-from collections import deque
 from sklearn.metrics import (
     accuracy_score, f1_score,
     precision_score, recall_score,
@@ -35,20 +34,22 @@ class IDSEnvironment(gym.Env):
         self.dataset = dataset
         self.num_features = self.dataset.shape[1] - 1  # all but 'class'
 
-        # Data is standardized (StandardScaler), so allow real-valued observations
+        # Data is standardized (e.g., StandardScaler), so allow real-valued observations
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
             shape=(self.num_features,),
             dtype=np.float32
         )
-        self.action_space = spaces.Discrete(2)  # 0 = normal, 1 = anomaly
+        # 0 = normal, 1 = anomaly
+        self.action_space = spaces.Discrete(2)
 
         self.current_data_pointer = 0
         self.state = self.dataset.iloc[self.current_data_pointer, :-1].values.astype(np.float32)
+        self.steps_in_episode = 0
 
     def discretize_state(self, state):
-        # Not used, but kept if you ever want discrete features again.
+        # Not used currently; kept for future discrete experiments.
         return np.clip((state * 10).astype(int), 0, 9)
 
     def step(self, curr_action):
@@ -57,15 +58,15 @@ class IDSEnvironment(gym.Env):
           - action 0 = predict "normal"
           - action 1 = predict "anomaly"
 
-        We treat anomalies as more important, but not insanely lopsided:
+        Moderately asymmetric, but bounded in [-1, 1]:
 
           If true = anomaly:
-              correct (1) -> +10
-              wrong   (0) -> -10
+              correct (1) -> +1.0
+              wrong   (0) -> -1.0
 
           If true = normal:
-              correct (0) -> +2
-              wrong   (1) -> -5
+              correct (0) -> +1.0
+              wrong   (1) -> -1.0
         """
         intrusion = self.dataset.iloc[self.current_data_pointer, -1]
         self.state = self.dataset.iloc[self.current_data_pointer, :-1].values.astype(np.float32)
@@ -73,33 +74,32 @@ class IDSEnvironment(gym.Env):
         is_anom = (intrusion == 'anomaly')
 
         if is_anom:
-            reward = 10.0 if curr_action == 1 else -10.0
+            reward = 1.0 if curr_action == 1 else -1.0
         else:
-            reward = 2.0 if curr_action == 0 else -5.0
+            reward = 1.0 if curr_action == 0 else -1.0
 
-        # Optional: scale rewards to stabilize RL (uncomment if needed)
-        # reward = reward / 10.0
-
+        # Move to next row
         self.current_data_pointer += 1
+        self.steps_in_episode += 1
+
         done = self.current_data_pointer >= len(self.dataset)
 
-        return self.state, reward, done, {'label': 1 if is_anom else 0}
+        # Label: 1 for anomaly, 0 for normal
+        info = {'label': 1 if is_anom else 0}
+        return self.state, reward, done, info
 
-    def reset(self, episode_num=0, *args, **kwargs):
+    def reset(self, episode_num=0):
         """
-        Basic reset with occasional jumps to different parts of the dataset
-        during training, so the agent doesn't always see the same prefix.
+        Reset by jumping to a random starting point in the dataset.
+        This makes episodes cover different slices.
         """
-        # Wrap around if at end
-        if self.current_data_pointer >= len(self.dataset):
+        if len(self.dataset) <= 1:
             self.current_data_pointer = 0
-
-        # Every 10 episodes, jump somewhere else (only if big enough dataset)
-        if episode_num % 10 == 1 and len(self.dataset) > 10000:
-            jump_point = np.random.randint(0, len(self.dataset) - 10000)
-            self.current_data_pointer = jump_point
+        else:
+            self.current_data_pointer = np.random.randint(0, len(self.dataset) - 1)
 
         self.state = self.dataset.iloc[self.current_data_pointer, :-1].values.astype(np.float32)
+        self.steps_in_episode = 0
         return self.state
 
     def render(self, mode='human'):
@@ -187,15 +187,15 @@ class IQNAgent:
         self,
         state_size,
         action_size,
-        num_tau_samples=32,
-        embedding_dim=64,
-        num_quantiles=32,
+        num_tau_samples=8,
+        embedding_dim=32,
+        num_quantiles=8,
         gamma=0.99,
         learning_rate=1e-4,
         epsilon_start=1.0,
         epsilon_min=0.1,
         epsilon_decay=0.995,
-        batch_size=128,
+        batch_size=64,
         update_target_every=500
     ):
         self.state_size = state_size
@@ -213,6 +213,14 @@ class IQNAgent:
         self.update_target_every = update_target_every
         self.train_step = 0
 
+        # Pre-allocate τ samples to avoid repeated allocations
+        self.taus_cache = np.random.uniform(
+            0, 1, size=(batch_size, num_tau_samples, 1)
+        ).astype(np.float32)
+        self.next_taus_cache = np.random.uniform(
+            0, 1, size=(batch_size, num_tau_samples, 1)
+        ).astype(np.float32)
+
         # Build online & target networks
         self.model = self._build_model()
         self.target_model = self._build_model()
@@ -220,11 +228,11 @@ class IQNAgent:
 
     def _build_model(self):
         """
-        A beefed-up IQN network:
-          - Two 128-unit dense layers for state embedding
-          - Tau embedding with cosine features -> 128
+        A leaner IQN network:
+          - Two 64-unit dense layers for state embedding
+          - Tau embedding with cosine features -> 64
           - Combine via element-wise multiplication
-          - Two more 128-unit dense layers
+          - Two more 64-unit dense layers
           - Output quantiles for each action
         """
         states_input = tf.keras.Input(shape=(self.state_size,), dtype=tf.float32)
@@ -233,9 +241,9 @@ class IQNAgent:
         # ----------------------------
         # State embedding
         # ----------------------------
-        x = tf.keras.layers.Dense(128, activation='relu')(states_input)
-        x = tf.keras.layers.Dense(128, activation='relu')(x)
-        x = tf.expand_dims(x, axis=1)  # (B, 1, 128)
+        x = tf.keras.layers.Dense(64, activation='relu')(states_input)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Lambda(lambda t: tf.expand_dims(t, axis=1))(x)  # (B, 1, 64)
 
         # ----------------------------
         # Tau (quantile) embedding
@@ -243,15 +251,16 @@ class IQNAgent:
         i_pi = tf.constant(
             np.arange(1, self.embedding_dim + 1) * np.pi, dtype=tf.float32
         )  # (embedding_dim,)
-        cos_tau = tf.cos(tf.matmul(taus_input, i_pi[None, :]))  # (B, num_tau_samples, embedding_dim)
-        cos_tau = tf.keras.layers.Dense(128, activation='relu')(cos_tau)
+        # (B, num_tau_samples, embedding_dim)
+        cos_tau = tf.cos(tf.matmul(taus_input, i_pi[None, :]))
+        cos_tau = tf.keras.layers.Dense(64, activation='relu')(cos_tau)
 
         # ----------------------------
         # Combine state & quantile
         # ----------------------------
-        x = tf.keras.layers.Multiply()([x, cos_tau])  # (B, num_tau_samples, 128)
-        x = tf.keras.layers.Dense(128, activation='relu')(x)
-        x = tf.keras.layers.Dense(128, activation='relu')(x)
+        x = tf.keras.layers.Multiply()([x, cos_tau])  # (B, num_tau_samples, 64)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
 
         quantiles = tf.keras.layers.Dense(self.action_size)(x)  # (B, num_tau_samples, A)
 
@@ -263,10 +272,12 @@ class IQNAgent:
         return model
 
     def sample_taus(self, batch_size):
+        # Used in act() only; small allocations
         return np.random.uniform(
             0, 1, size=(batch_size, self.num_tau_samples, 1)
         ).astype(np.float32)
 
+    @tf.function
     def quantile_huber_loss(self, y_true, y_pred, kappa=1.0):
         """
         Standard IQN quantile Huber loss using a fixed grid of taus.
@@ -283,7 +294,7 @@ class IQNAgent:
         )
 
         # quantile regression term
-        tau = tf.linspace(0.0, 1.0, self.num_tau_samples + 1)[1:]  # avoid 0
+        tau = tf.linspace(0.0, 1.0, tf.cast(self.num_tau_samples, tf.int32) + 1)[1:]  # avoid 0
         tau = tf.reshape(tau, (1, self.num_tau_samples, 1))  # (1, N, 1)
         tau = tf.cast(tau, tf.float32)
 
@@ -301,7 +312,11 @@ class IQNAgent:
 
         state = np.array(state, dtype=np.float32).reshape(1, -1)
         taus = self.sample_taus(1)
-        q_values = self.model.predict([state, taus], verbose=0)  # (1, N, A)
+        q_values = self.model.predict(
+            [state, taus],
+            verbose=0,
+            use_multiprocessing=False
+        )  # (1, N, A)
         q_mean = np.mean(q_values, axis=1)  # (1, A)
         return int(np.argmax(q_mean[0]))
 
@@ -318,11 +333,16 @@ class IQNAgent:
 
         batch_size = len(states)
 
-        taus = self.sample_taus(batch_size)
-        next_taus = self.sample_taus(batch_size)
+        # Use pre-allocated taus; slice to actual batch_size
+        taus = self.taus_cache[:batch_size]
+        next_taus = self.next_taus_cache[:batch_size]
 
         # Compute target quantiles
-        next_q = self.target_model.predict([next_states, next_taus], verbose=0)  # (B, N, A)
+        next_q = self.target_model.predict(
+            [next_states, next_taus],
+            verbose=0,
+            use_multiprocessing=False
+        )  # (B, N, A)
         next_q_mean = np.mean(next_q, axis=1)  # (B, A)
         next_actions = np.argmax(next_q_mean, axis=1)  # (B,)
 
@@ -331,7 +351,11 @@ class IQNAgent:
         targets = rewards[:, None] + (1.0 - dones[:, None]) * self.gamma * next_q_selected  # (B, N)
 
         # Current quantiles
-        current_pred = self.model.predict([states, taus], verbose=0)  # (B, N, A)
+        current_pred = self.model.predict(
+            [states, taus],
+            verbose=0,
+            use_multiprocessing=False
+        )  # (B, N, A)
 
         # Build y_true with only chosen actions updated
         y_true = np.copy(current_pred)
@@ -345,6 +369,10 @@ class IQNAgent:
         self.train_step += 1
         if self.train_step % self.update_target_every == 0:
             self.update_target_network(hard=True)
+
+        # Help GC
+        del states, next_states, actions, rewards, dones, next_q, current_pred, y_true, targets
+        gc.collect()
 
     def update_target_network(self, hard=False, tau=0.005):
         if hard:
@@ -363,17 +391,16 @@ class IQNAgent:
 
 def train_iqn_agent(
     env,
-    num_episodes=1000,
-    batch_size=128,
-    warmup_size=10000,
+    num_episodes=300,
+    batch_size=32,
+    warmup_size=5000,
     train_updates_per_step=1,
     epsilon_start=1.0,
-    epsilon_decay=0.995,
+    epsilon_decay=0.99,
     epsilon_min=0.1,
     buffer_capacity=50000,
-    save_path=None,
-    validate_env=None,
-    validate_every=100
+    max_steps_per_episode=400,
+    save_path= f"/home/wamoody/DRLIDS/results/mainHpcc/iqn_modelHpcc",
 ):
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
@@ -418,7 +445,7 @@ def train_iqn_agent(
             done = False
             step_count = 0
 
-            while not done:
+            while not done and step_count < max_steps_per_episode:
                 action = agent.act(state)
                 next_state, reward, done, info = env.step(action)
                 label = info.get("label", 0)
@@ -428,38 +455,20 @@ def train_iqn_agent(
                 total_reward += reward
                 step_count += 1
 
-                if step_count > 500:
-                    done = True
-
                 # Training
                 if len(memory_buffer) >= batch_size:
                     for _ in range(train_updates_per_step):
                         experiences = memory_buffer.sample_balanced(batch_size=batch_size)
                         agent.train_step_batch(experiences)
+                        del experiences
 
             # Logging
             agent.epsilon = max(agent.epsilon_min, agent.epsilon * agent.epsilon_decay)
             rewards.append(total_reward)
-            print(f"Episode {episode+1}/{num_episodes}  Reward:{total_reward:.1f}  Epsilon:{agent.epsilon:.3f}")
-
-            # -----------------------------------------------------
-            # 🔥 MEMORY CLEANUP EVERY EPISODE (NOT EVERY 50 EPISODES)
-            # -----------------------------------------------------
-            print("  -> Memory cleanup...")
-            main_weights  = agent.model.get_weights()
-            target_weights = agent.target_model.get_weights()
-
-            tf.keras.backend.clear_session()
-            gc.collect()
-
-            # Rebuild fresh models
-            agent.model = agent._build_model()
-            agent.model.set_weights(main_weights)
-
-            agent.target_model = agent._build_model()
-            agent.target_model.set_weights(target_weights)
-
-            gc.collect()
+            print(
+                f"Episode {episode+1}/{num_episodes}  "
+                f"Reward:{total_reward:.1f}  Epsilon:{agent.epsilon:.3f}"
+            )
 
     except Exception as e:
         print("Training aborted with exception:", e)
@@ -476,6 +485,14 @@ def train_iqn_agent(
             gc.collect()
         except Exception:
             pass
+
+    # Optional final save
+    if save_path is not None:
+        try:
+            agent.model.save(save_path)
+            print("Final model saved to:", save_path)
+        except Exception as e:
+            print("Failed to save final model:", e)
 
     return rewards, agent
 
