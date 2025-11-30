@@ -20,4 +20,4 @@ export PYTHONUNBUFFERED=1
 
 cd /home/wamoody/DRLIDS
 
-python -u mainHpccIQN.py
+python -u mainHpcc.py

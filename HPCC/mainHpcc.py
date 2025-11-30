@@ -1,22 +1,16 @@
+# main_qrdqn.py
 import os
 import time
-import random
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import matplotlib.pyplot as plt
 import joblib
-
-import seaborn as sns
 from scipy.io import arff
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import matplotlib.pyplot as plt
 
-from common import IDSEnvironment, ReplayBuffer, QRDQNAgent, IQNAgent
-from QRDQNHpcc import train_qr_dqn_agent_batch, test, train_qr_dqn_agent, train_qr_dqn_agent_soft_target
-from IQNHpcc import train_iqn_agent, test_iqn_agent
-from tqdm import tqdm
-
+from common import IDSEnvironment
+from QRDQNHpcc import train_qr_dqn_agent, test, visualize_training_results
 
 # ------------------------------
 # HPC-specific paths
@@ -25,175 +19,136 @@ BASEDIR = "/home/wamoody/DRLIDS"
 BASEDIR2 = "/home/wamoody/DRLIDS"
 RESULTS_DIR = f"{BASEDIR}/results/mainHpcc"
 os.makedirs(RESULTS_DIR, exist_ok=True)
-MODEL_PATH = f"{RESULTS_DIR}/iqn_modelHpcc"
+
+MODEL_PATH = f"{RESULTS_DIR}/qrdqn_modelHpcc.keras"
 TEST_DATA_PATH = f"{RESULTS_DIR}/test_data_scaled.pkl"
 TRAIN_COLS_PATH = f"{RESULTS_DIR}/train_columns.pkl"
 SCALER_PATH = f"{RESULTS_DIR}/scaler.pkl"
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+tf.get_logger().setLevel("ERROR")
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-tf.get_logger().setLevel('ERROR')
 print("TensorFlow version:", tf.__version__)
-print("GPU devices:", tf.config.list_physical_devices('GPU'))
-if tf.config.list_physical_devices('GPU'):
-    print("Using GPU")
-else:
-    print("NOT using GPU")
+print("GPU devices:", tf.config.list_physical_devices("GPU"))
+print(
+    "Using GPU"
+    if tf.config.list_physical_devices("GPU")
+    else "NOT using GPU"
+)
+
 
 # ------------------------------
 # Dataset processing
 # ------------------------------
-
-# Assume your data is in a DataFrame called df
-# and the last column is 'class' with values 'normal' or 'anomaly'
-
 def process_dataset():
     train_data_arff, _ = arff.loadarff(f"{BASEDIR2}/NSL-KDD/KDDTrain+.arff")
     test_data_arff, _ = arff.loadarff(f"{BASEDIR2}/NSL-KDD/KDDTest+.arff")
+
     train_df = pd.DataFrame(train_data_arff)
     test_df = pd.DataFrame(test_data_arff)
 
-    # Decode bytes
-    train_df = train_df.applymap(lambda x: x.decode('utf-8') if isinstance(x, bytes) else x)
-    test_df = test_df.applymap(lambda x: x.decode('utf-8') if isinstance(x, bytes) else x)
+    # Decode bytes to str
+    train_df = train_df.applymap(
+        lambda x: x.decode("utf-8") if isinstance(x, bytes) else x
+    )
+    test_df = test_df.applymap(
+        lambda x: x.decode("utf-8") if isinstance(x, bytes) else x
+    )
 
-    y_train = train_df['class']
-    y_test = test_df['class']
-    X_train = train_df.drop(columns=['class'])
-    X_test = test_df.drop(columns=['class'])
+    y_train = train_df["class"]
+    y_test = test_df["class"]
+    X_train = train_df.drop(columns=["class"])
+    X_test = test_df.drop(columns=["class"])
 
-    categorical_cols = ['protocol_type', 'service', 'flag', 'land',
-                        'logged_in', 'is_host_login', 'is_guest_login']
+    categorical_cols = [
+        "protocol_type",
+        "service",
+        "flag",
+        "land",
+        "logged_in",
+        "is_host_login",
+        "is_guest_login",
+    ]
 
     X_train = pd.get_dummies(X_train, columns=categorical_cols)
     X_test = pd.get_dummies(X_test, columns=categorical_cols)
 
+    # align columns
     X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
 
     scaler = StandardScaler()
-    X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
-    X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+    X_train_scaled = pd.DataFrame(
+        scaler.fit_transform(X_train), columns=X_train.columns
+    )
+    X_test_scaled = pd.DataFrame(
+        scaler.transform(X_test), columns=X_test.columns
+    )
 
-    # Add labels back before shuffle
-    X_train_scaled['class'] = y_train.values
-    X_test_scaled['class'] = y_test.values
+    # add labels back
+    X_train_scaled["class"] = y_train.values
+    X_test_scaled["class"] = y_test.values
 
-    print(X_train_scaled['class'].value_counts())
-    print(X_train_scaled.head(3).iloc[:, -3:])
-
-    # ✔️ Shuffle AFTER adding labels
-    train_df_shuffled = X_train_scaled.sample(frac=1, random_state=42).reset_index(drop=True)
+    # shuffle train
+    train_df_shuffled = (
+        X_train_scaled.sample(frac=1, random_state=42)
+        .reset_index(drop=True)
+    )
 
     return train_df_shuffled, X_test_scaled, scaler
 
 
-# Run dataset processing
-train_data, test_data, scaler = process_dataset()
-
-
-# Save both the scaler and the one-hot encoded column structure
-joblib.dump(scaler, os.path.join(RESULTS_DIR, "scaler.pkl"))
-joblib.dump(train_data.columns.tolist(), os.path.join(RESULTS_DIR, "train_columns.pkl"))
-joblib.dump(test_data, os.path.join(RESULTS_DIR, "test_data_scaled.pkl"))
-print("Saved test_data_scaled.pkl")
-
-print(f"Saved scaler and train_columns to {RESULTS_DIR}")
-
 # ------------------------------
-# Plotting
+# Main
 # ------------------------------
+if __name__ == "__main__":
+    # ---------- Data ----------
+    print("Processing dataset...")
+    train_data, test_data, scaler = process_dataset()
 
-def visualize_training_results(rewards, save_path):
-    moving_avg = [np.mean(rewards[max(0, i-100):i+1]) for i in range(len(rewards))]
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(10,5))
-    plt.plot(rewards, label='Episode Reward', alpha=0.6)
-    plt.plot(moving_avg, label='Moving Avg', color='red')
-    plt.xlabel("Episode")
-    plt.ylabel("Reward")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+    joblib.dump(scaler, SCALER_PATH)
+    joblib.dump(train_data.columns.tolist(), TRAIN_COLS_PATH)
+    joblib.dump(test_data, TEST_DATA_PATH)
+    print(
+        f"Saved scaler, train_columns, and test_data_scaled.pkl to {RESULTS_DIR}"
+    )
 
-# ------------------------------
-# Main HPC training/testing
-# ------------------------------
-
-
-if __name__ == '__main__':
-    # --- Load & process dataset ---
-    print("Dataset and scaler saved.")
-
-    # --- Initialize environment & warm-up ---
+    # ---------- Train ----------
+    print("Initializing training environment...")
     train_env = IDSEnvironment(train_data, train=True)
-    # --- Train agent ---
+
+    print("Beginning QRDQN training...")
     start_time = time.time()
-
-    
-    print("Beign training")
-    training_rewards, agent = train_iqn_agent(train_env)
-
+    training_rewards, agent = train_qr_dqn_agent(
+        train_env,
+        num_episodes=150,
+        batch_size=64,
+        gamma=0.99,
+        warmup_size=2000,
+        train_every=2,
+        update_target_every=1000,
+    )
     print(f"Training finished in {time.time() - start_time:.2f}s")
-    visualize_training_results(training_rewards, save_path=f"{RESULTS_DIR}/IQN_train_rewards.png")
-    
+
+    visualize_training_results(
+        training_rewards,
+        save_path=f"{RESULTS_DIR}/QRDQN_train_rewards.png",
+    )
+
     try:
         agent.model.save(MODEL_PATH)
-        print(f"Saved model to {MODEL_PATH}")
+        print(f"Saved QRDQN model to {MODEL_PATH}")
     except Exception as e:
         print("Warning: failed to save model:", e)
 
-
-    test_env = IDSEnvironment(test_data, train=False)
-    results, test_rewards = test_iqn_agent(agent, test_env, num_episodes=50)
-    visualize_training_results(test_rewards, save_path=f"{RESULTS_DIR}/IQN_test_rewards.png")
-
-    print("Finished successfully.")
-
-'''
-if __name__ == '__main__':
-    print("===== Starting Test-only Run =====", flush=True)
-
-    # --------------------------
-    # Load test dataset and environment
-    # --------------------------
-    print("Loading test dataset from:", TEST_DATA_PATH)
-    test_data = joblib.load(TEST_DATA_PATH)
-    print(f"Test data shape: {test_data.shape}")
-
+    # ---------- Test ----------
     print("Initializing test environment...")
     test_env = IDSEnvironment(test_data, train=False)
 
-    # --------------------------
-    # Load trained IQN agent
-    # --------------------------
-    tf.keras.backend.clear_session()
-    print(f"Loading IQN model from: {MODEL_PATH}")
-    agent = IQNAgent(state_size=test_env.num_features, action_size=test_env.action_space.n)
-    loaded_model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    agent.model = loaded_model
-    agent.target_model = loaded_model
-    print("Model loaded successfully.")
+    print("Evaluating QRDQN agent...")
+    results, test_rewards = test(agent, test_env, num_episodes=50)
+    visualize_training_results(
+        test_rewards,
+        save_path=f"{RESULTS_DIR}/QRDQN_test_rewards.png",
+    )
 
-    # --------------------------
-    # Evaluate agent using environment episodes
-    # --------------------------
-    NUM_EPISODES = 50
-    print(f"Running {NUM_EPISODES} test episodes in the environment...")
-    metrics = test_iqn_agent(agent, test_env, num_episodes=NUM_EPISODES)
-    print("Test episodes completed.\n")
-
-    # --------------------------
-    # Summary of evaluation metrics
-    # --------------------------
-    print("===== Evaluation Metrics =====")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"F1 Score: {metrics['f1']:.4f}")
-    print("Confusion Matrix:\n", metrics['confusion_matrix'])
-    print("===== Test-only Run Complete =====")
-
-
-'''
+    print("Finished successfully.")
