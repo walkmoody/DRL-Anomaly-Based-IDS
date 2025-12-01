@@ -134,11 +134,23 @@ if __name__ == "__main__":
         save_path=f"{RESULTS_DIR}/QRDQN_train_rewards.png",
     )
 
-    try:
-        agent.model.save(MODEL_PATH)
-        print(f"Saved QRDQN model to {MODEL_PATH}")
-    except Exception as e:
-        print("Warning: failed to save model:", e)
+    # ---------- Save Model (Correct for QRDQN) ----------
+    print("Saving QRDQN agent...")
+
+    # Save weights
+    agent.model.save_weights(f"{RESULTS_DIR}/qrdqn_weights.h5")
+    agent.target_model.save_weights(f"{RESULTS_DIR}/qrdqn_target_weights.h5")
+
+    # Save metadata (architecture info)
+    model_meta = {
+        "state_size": train_env.num_features,
+        "action_size": train_env.action_space.n,
+        "num_quantiles": agent.num_quantiles,
+    }
+    joblib.dump(model_meta, f"{RESULTS_DIR}/qrdqn_meta.pkl")
+
+    print("Saved: qrdqn_weights.h5, qrdqn_target_weights.h5, qrdqn_meta.pkl")
+
 
     # ---------- Test ----------
     print("Initializing test environment...")
