@@ -120,7 +120,6 @@ def test(agent, env, num_episodes=2):
             next_state, reward, done, info = env.step(action)
 
             label = info["label"]
-            print(label, end = " ")
             all_true.append(label)
             all_pred.append(action)
 

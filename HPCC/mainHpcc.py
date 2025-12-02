@@ -20,7 +20,7 @@ BASEDIR2 = "/home/wamoody/DRLIDS"
 RESULTS_DIR = f"{BASEDIR}/results/mainHpcc"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-MODEL_PATH = f"{RESULTS_DIR}/qrdqn_modelHpcc.keras"
+MODEL_PATH = f"{RESULTS_DIR}/qrdqn_modelHpcc"
 TEST_DATA_PATH = f"{RESULTS_DIR}/test_data_scaled.pkl"
 TRAIN_COLS_PATH = f"{RESULTS_DIR}/train_columns.pkl"
 SCALER_PATH = f"{RESULTS_DIR}/scaler.pkl"

@@ -43,7 +43,7 @@ class IDSEnvironment(gym.Env):
         label_str = self.dataset.iloc[idx, -1]
         label = 1 if str(label_str).lower() == "anomaly" else 0
 
-        # Reward: correct classification → +1, incorrect → -1
+        # Reward: correct +1, incorrect -1
         reward = 1.0 if action == label else -1.0
 
         # Move to next row
@@ -59,11 +59,7 @@ class IDSEnvironment(gym.Env):
         return next_state, reward, done, {"label": label}
 
     def reset(self, episode_num: int = 0):
-        """
-        Always reset to the start of the dataset.
-        You can make this jump around later if you want, but keep it
-        deterministic until things are stable.
-        """
+        # stays at the start of the dataset
         self.current_data_pointer = 0
         self.state = self.dataset.iloc[0, :-1].values.astype(np.float32)
         return self.state
@@ -188,7 +184,6 @@ class QRDQNAgent:
         q_means = np.mean(q, axis=2)  # (1, action_size)
         return int(np.argmax(q_means[0]))
 
-    # BATCH GREEDY ACTION (no epsilon)
     def act_batch(self, states):
         """
         states: np.array shape (B, state_size)
@@ -200,9 +195,6 @@ class QRDQNAgent:
         actions = np.argmax(q_means, axis=1)
         return actions.astype(np.int32)
 
-    # --------------------------------------
-    # TARGET NET UPDATE
-    # --------------------------------------
     def update_target_network(self, hard=False, tau=0.005):
         if hard:
             self.target_model.set_weights(self.model.get_weights())
@@ -213,9 +205,7 @@ class QRDQNAgent:
                 [(1 - tau) * t + tau * m for t, m in zip(tw, mw)]
             )
 
-    # --------------------------------------
-    # TRAINING STEP
-    # --------------------------------------
+    #  TRAINING STEP
     def train(self, experiences):
         states, actions, rewards, next_states, dones, labels = zip(*experiences)
         states = np.vstack(states).astype(np.float32)
