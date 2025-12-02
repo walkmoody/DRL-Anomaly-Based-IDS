@@ -1,3 +1,4 @@
+#watch video to see explanation on how to set up environment
 #install python 3.7
 #create conda env and install these dependencies 
 
