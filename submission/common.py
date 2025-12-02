@@ -9,7 +9,7 @@ import tensorflow as tf
 class IDSEnvironment(gym.Env):
     """
     Environment for NSL-KDD intrusion detection.
-    Assumes `dataset` is a pandas DataFrame where:
+    Dataset:
       - all feature columns are numeric
       - the last column is 'class' with 'normal' or 'anomaly'
     """

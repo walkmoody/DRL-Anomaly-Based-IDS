@@ -7,7 +7,7 @@ from scipy.io import arff
 import pandas as pd
 
 from common import IDSEnvironment
-from QRDQNHpcc import QRDQNAgent, test
+from QRDQN import QRDQNAgent, test
 
 # PATHS
 BASEDIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,9 +16,6 @@ DEPENDENCIES_DIR = os.path.join(BASEDIR, "dependencies")
 SCALER_PATH = os.path.join(DEPENDENCIES_DIR, "scaler.pkl")
 TRAIN_COLS_PATH = os.path.join(DEPENDENCIES_DIR, "train_columns.pkl")
 TEST_ARFF_PATH = os.path.join(DEPENDENCIES_DIR, "KDDTest+ copy.arff")
-
-RESULTS_DIR = os.path.join(BASEDIR, "results")
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # load data
 
